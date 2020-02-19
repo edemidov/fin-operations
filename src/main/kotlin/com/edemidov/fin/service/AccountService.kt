@@ -1,70 +1,75 @@
 package com.edemidov.fin.service
 
-import com.edemidov.fin.api.AccountResource
+import com.edemidov.fin.api.*
 import com.edemidov.fin.entity.Account
 import com.edemidov.fin.repository.AccountRepository
 import com.google.inject.Inject
 import com.google.inject.Singleton
 import org.jetbrains.exposed.sql.transactions.transaction
+import java.math.BigDecimal
 
 @Singleton
 class AccountService @Inject constructor(private val accountRepository: AccountRepository) {
 
-    fun createAccount(account: AccountResource): Long {
+    fun create(account: AccountResource): AccountResource {
         return transaction {
-            accountRepository.create(Account(0L, account.name, account.notes, account.status, account.amount))
-        }
-    }
-
-    fun getAccount(accountId: Long): AccountResource {
-        return transaction {
-            accountRepository.fetchById(accountId).let { account ->
-                AccountResource().apply {
-                    id = account.id
-                    name = account.name
-                    notes = account.notes
-                    status = account.status
+            val newId = accountRepository.create(
+                Account(
+                    id = 0L,
+                    name = account.name,
+                    status = account.status,
                     amount = account.amount
-                }
-            }
+                )
+            )
+            account.apply { id = newId }
         }
     }
 
-    fun updateAccount(accountId: Long, account: AccountResource) {
+    fun retrieveOne(accountId: Long): AccountResource {
         return transaction {
-            accountRepository.modify(accountId) { update ->
+            accountRepository.fetchById(accountId)
+                ?.let(::accountToResource) ?: throw throw ResourceNotFoundException(ACCOUNT_NOT_FOUND(accountId))
+        }
+    }
+
+    fun retrieveWithCursor(cursorRequest: CursorRequest): CursorResponse<AccountResource> {
+        return transaction {
+            val fetchedResources = accountRepository.fetch(cursorRequest.cursor, cursorRequest.numberOfEntitiesToFetch)
+                .map(::accountToResource)
+            toCursorResponse(fetchedResources, cursorRequest)
+        }
+    }
+
+    fun update(accountId: Long, account: AccountResource): AccountResource {
+        return transaction {
+            accountRepository.modify(accountId) { update, _ ->
                 update[name] = account.name
-                update[notes] = account.notes
                 update[status] = account.status
                 update[amount] = account.amount
             }
+            account.apply { id = accountId }
         }
     }
 
-    fun patchAccount(accountId: Long, account: AccountResource) {
-        return transaction {
-            accountRepository.modify(accountId) { update ->
-                if (account.hasName()) {
-                    update[name] = account.name
-                }
-                if (account.hasNotes()) {
-                    update[notes] = account.notes
-                }
-                if (account.hasStatus()) {
-                    update[status] = account.status
-                }
-                if (account.hasAmount()) {
-                    update[amount] = account.amount
-                }
-            }
-        }
-    }
-
-    fun deleteAccount(accountId: Long) {
+    fun delete(accountId: Long) {
         transaction {
-            accountRepository.modify(accountId) {update ->
+            accountRepository.modify(accountId, ::validateBeforeDelete) { update, _ ->
                 update[removed] = true
             }
         }
     }
+
+    private fun validateBeforeDelete(account: Account) {
+        if (account.amount != BigDecimal("0.00")) {
+            throw BadRequestException(ACCOUNT_WITH_FUNDS_CANNOT_BE_REMOVED(account.id))
+        }
+    }
+
+    private fun accountToResource(account: Account) =
+        AccountResource(
+            id = account.id,
+            name = account.name,
+            status = account.status,
+            amount = account.amount
+        )
 }
